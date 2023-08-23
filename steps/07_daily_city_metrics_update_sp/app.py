@@ -43,11 +43,14 @@ def merge_daily_city_metrics(session):
     orders_stream_dates = session.table('HARMONIZED.ORDERS_STREAM').select(F.col("ORDER_TS_DATE").alias("DATE")).distinct()
     orders_stream_dates.limit(5).show()
 
-    orders = session.table("HARMONIZED.ORDERS_STREAM").group_by(F.col('ORDER_TS_DATE'), F.col('PRIMARY_CITY'), F.col('COUNTRY')) \
-                                        .agg(F.sum(F.col("PRICE")).as_("price_nulls")) \
-                                        .with_column("DAILY_SALES", F.call_builtin("ZEROIFNULL", F.col("price_nulls"))) \
-                                        .select(F.col('ORDER_TS_DATE').alias("DATE"), F.col("PRIMARY_CITY").alias("CITY_NAME"), \
-                                        F.col("COUNTRY").alias("COUNTRY_DESC"), F.col("DAILY_SALES"))
+    orders = (
+        session
+            .table("HARMONIZED.ORDERS_STREAM")
+            .group_by(F.col('ORDER_TS_DATE'), F.col('PRIMARY_CITY'), F.col('COUNTRY'))
+            .agg(F.sum(F.col("PRICE")).as_("price_nulls"))
+            .with_column("DAILY_SALES", F.call_builtin("ZEROIFNULL", F.col("price_nulls")))
+            .select(F.col('ORDER_TS_DATE').alias("DATE"), F.col("PRIMARY_CITY").alias("CITY_NAME"),F.col("COUNTRY").alias("COUNTRY_DESC"), F.col("DAILY_SALES"))
+    )
 #    orders.limit(5).show()
 
     weather_pc = session.table("FROSTBYTE_WEATHERSOURCE.ONPOINT_ID.POSTAL_CODES")
@@ -57,29 +60,45 @@ def merge_daily_city_metrics(session):
     weather = weather.join(countries, (weather['COUNTRY'] == countries['ISO_COUNTRY']) & (weather['CITY_NAME'] == countries['CITY']), rsuffix='_c')
     weather = weather.join(orders_stream_dates, weather['DATE_VALID_STD'] == orders_stream_dates['DATE'])
 
-    weather_agg = weather.group_by(F.col('DATE_VALID_STD'), F.col('CITY_NAME'), F.col('COUNTRY_C')) \
-                        .agg( \
-                            F.avg('AVG_TEMPERATURE_AIR_2M_F').alias("AVG_TEMPERATURE_F"), \
-                            F.avg(F.call_udf("ANALYTICS.FAHRENHEIT_TO_CELSIUS_UDF", F.col("AVG_TEMPERATURE_AIR_2M_F"))).alias("AVG_TEMPERATURE_C"), \
-                            F.avg("TOT_PRECIPITATION_IN").alias("AVG_PRECIPITATION_IN"), \
-                            F.avg(F.call_udf("ANALYTICS.INCH_TO_MILLIMETER_UDF", F.col("TOT_PRECIPITATION_IN"))).alias("AVG_PRECIPITATION_MM"), \
-                            F.max(F.col("MAX_WIND_SPEED_100M_MPH")).alias("MAX_WIND_SPEED_100M_MPH") \
-                        ) \
-                        .select(F.col("DATE_VALID_STD").alias("DATE"), F.col("CITY_NAME"), F.col("COUNTRY_C").alias("COUNTRY_DESC"), \
-                            F.round(F.col("AVG_TEMPERATURE_F"), 2).alias("AVG_TEMPERATURE_FAHRENHEIT"), \
-                            F.round(F.col("AVG_TEMPERATURE_C"), 2).alias("AVG_TEMPERATURE_CELSIUS"), \
-                            F.round(F.col("AVG_PRECIPITATION_IN"), 2).alias("AVG_PRECIPITATION_INCHES"), \
-                            F.round(F.col("AVG_PRECIPITATION_MM"), 2).alias("AVG_PRECIPITATION_MILLIMETERS"), \
-                            F.col("MAX_WIND_SPEED_100M_MPH")
-                            )
+    weather_agg = (
+        weather
+            .group_by(F.col('DATE_VALID_STD'), F.col('CITY_NAME'), F.col('COUNTRY_C'))
+            .agg( 
+                F.avg('AVG_TEMPERATURE_AIR_2M_F').alias("AVG_TEMPERATURE_F"),
+                F.avg(F.call_udf("ANALYTICS.FAHRENHEIT_TO_CELSIUS_UDF", F.col("AVG_TEMPERATURE_AIR_2M_F"))).alias("AVG_TEMPERATURE_C"), \
+                F.avg("TOT_PRECIPITATION_IN").alias("AVG_PRECIPITATION_IN"),
+                F.avg(F.call_udf("ANALYTICS.INCH_TO_MILLIMETER_UDF", F.col("TOT_PRECIPITATION_IN"))).alias("AVG_PRECIPITATION_MM"), \
+                F.max(F.col("MAX_WIND_SPEED_100M_MPH")).alias("MAX_WIND_SPEED_100M_MPH")
+            )
+            .select(
+                F.col("DATE_VALID_STD").alias("DATE"), 
+                F.col("CITY_NAME"), 
+                F.col("COUNTRY_C").alias("COUNTRY_DESC"),
+                F.round(F.col("AVG_TEMPERATURE_F"), 2).alias("AVG_TEMPERATURE_FAHRENHEIT"),
+                F.round(F.col("AVG_TEMPERATURE_C"), 2).alias("AVG_TEMPERATURE_CELSIUS"),
+                F.round(F.col("AVG_PRECIPITATION_IN"), 2).alias("AVG_PRECIPITATION_INCHES"),
+                F.round(F.col("AVG_PRECIPITATION_MM"), 2).alias("AVG_PRECIPITATION_MILLIMETERS"),
+                F.col("MAX_WIND_SPEED_100M_MPH")
+            )
+        )
 #    weather_agg.limit(5).show()
 
-    daily_city_metrics_stg = orders.join(weather_agg, (orders['DATE'] == weather_agg['DATE']) & (orders['CITY_NAME'] == weather_agg['CITY_NAME']) & (orders['COUNTRY_DESC'] == weather_agg['COUNTRY_DESC']), \
-                        how='left', rsuffix='_w') \
-                    .select("DATE", "CITY_NAME", "COUNTRY_DESC", "DAILY_SALES", \
-                        "AVG_TEMPERATURE_FAHRENHEIT", "AVG_TEMPERATURE_CELSIUS", \
-                        "AVG_PRECIPITATION_INCHES", "AVG_PRECIPITATION_MILLIMETERS", \
-                        "MAX_WIND_SPEED_100M_MPH")
+    daily_city_metrics_stg = (
+        orders
+            .join(
+                weather_agg,  
+                on=(orders['DATE'] == weather_agg['DATE']) & (orders['CITY_NAME'] == weather_agg['CITY_NAME']) & (orders['COUNTRY_DESC'] == weather_agg['COUNTRY_DESC']),
+                how='left',
+                rsuffix='_w'
+            )
+            .select(
+                "DATE", "CITY_NAME", "COUNTRY_DESC", "DAILY_SALES",
+                "AVG_TEMPERATURE_FAHRENHEIT", "AVG_TEMPERATURE_CELSIUS",
+                "AVG_PRECIPITATION_INCHES", "AVG_PRECIPITATION_MILLIMETERS",
+                "MAX_WIND_SPEED_100M_MPH"
+            )
+        )
+    
 #    daily_city_metrics_stg.limit(5).show()
 
     cols_to_update = {c: daily_city_metrics_stg[c] for c in daily_city_metrics_stg.schema.names}
